@@ -1,2 +1,2 @@
 # jwzlib
-Java WZ Library
+Java Wz Library
