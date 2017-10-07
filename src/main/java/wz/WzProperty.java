@@ -18,8 +18,10 @@
 package wz;
 
 import java.awt.Point;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Objects;
+
 import wz.common.MP3;
 import wz.common.PNG;
 import wz.io.WzInputStream;
@@ -143,9 +145,28 @@ public final class WzProperty<E> extends WzObject<WzProperty<E>, WzProperty<?>> 
                     int height = in.readCompressedInteger();
                     int format = in.readCompressedInteger() + in.readByte();
                     in.skip(4);
-                    int len = in.readInteger() - 1;
+                    int len = in.readInteger() - 1 - 2;
                     in.skip(1);
-                    byte[] data = in.readBytes(len);
+                    int zHeader = in.readShort() & 0xFFFF;
+                    
+                    // Checks to see if this is a valid zlib header, we will swallow it
+                    // if it's a legit header, we can move on without decoding the image
+                    // buffer
+			        boolean requiresDecryption = zHeader != 0x9C78 && zHeader != 0xDA78 && zHeader != 0x0178 && zHeader != 0x5E78;
+			        
+                    byte[] data;
+			        if (requiresDecryption) {
+			        	in.skip(-2); // skip first block entirely?
+			        	
+			        	int blockSize = in.readInteger();
+			        	
+			        	in.skip(blockSize); // skip first block, most likely header data
+			        	
+			        	data = in.decodeBuffer(len - 2 - blockSize);
+			        } else {
+	                    data = in.readBytes(len);
+			        }
+                    
                     canvas.setValue(new PNG(width, height, format, data));
                     child = canvas;
                     break;

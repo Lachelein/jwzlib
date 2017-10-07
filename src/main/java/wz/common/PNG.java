@@ -19,7 +19,13 @@ package wz.common;
 
 import java.awt.Image;
 import java.awt.Point;
-import java.awt.image.*;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBuffer;
+import java.awt.image.DataBufferByte;
+import java.awt.image.PixelInterleavedSampleModel;
+import java.awt.image.Raster;
+import java.awt.image.SampleModel;
+import java.awt.image.WritableRaster;
 import java.util.zip.Inflater;
 
 /**
@@ -58,48 +64,50 @@ public final class PNG {
     }
 
     public void inflateData() {
-        int len;
-        int size;
-        int bufSize = height * width * 8;
-        byte[] decBuff = new byte[bufSize > 2 ? bufSize : 2];
-        size = height * width;
+        int len, size;
+        
+        byte[] unc = new byte[height * width * 8];
+        Inflater dec = new Inflater(true);
+        dec.setInput(data, 0, data.length);
+        try {
+        	len = dec.inflate(unc);
+        } catch (Exception e) {
+        	e.printStackTrace();
+            unc = data;
+            len = unc.length;
+        }
+        dec.end();
+        
+        size = len;
         switch (format) {
             case 2:
                 size *= 2;
             case 1:
             case 513:
-                size *= 4;
+                size *= 2;
                 break;
             case 517:
                 size /= 128;
                 break;
             case 1026:
                 // DXT1 Format
-                System.out.println("DXT1 Format is currently unsupported.");
+                System.out.println("DXT3 Format is currently unsupported.");
                 break;
+            case 2050:
+            	// DXT5
+                System.out.println("DXT5 Format is currently unsupported.");
+                System.out.println("Size = " + size + " Len = " + data.length);
+            	break;
             default:
                 System.out.println("New image format: " + format);
                 break;
         }
-        byte[] unc = new byte[size];
-        if (size > data.length) {
-            Inflater dec = new Inflater();
-            dec.setInput(data, 0, data.length);
-            try {
-                len = dec.inflate(unc);
-            } catch (Exception e) {
-                unc = data;
-                len = unc.length;
-            }
-            dec.end();
-        } else {
-            unc = data;
-            len = unc.length;
-        }
+        
         int index;
+        byte[] decBuff = new byte[size];
         switch (format) {
             case 1:
-                for (int i = 0; i < size; i++) {
+                for (int i = 0; i < len; i++) {
                     int lo = unc[i] & 0x0F;
                     int hi = unc[i] & 0xF0;
                     index = i << 1;
@@ -137,15 +145,162 @@ public final class PNG {
                     }
                 }
                 break;
+            case 2050:
+            	Color[] colorTable = new Color[4];
+            	int[] colorIdxTable = new int[16];
+            	int[] alphaTable   = new int[8];
+            	int[] alphaIdxTable = new int[16];
+            	
+            	for (int y = 0; y < height; y += 4) {
+            		for (int x = 0; x < width; x += 4) {
+            			
+            			int offset = x * 4 + y * width;
+            			
+            			// ExpandAlphaTableDXT5(alphaTable, rawData[off + 0], rawData[off + 1]);
+            			expandAlphaTableDXT5(alphaTable, unc[offset] & 0xFF, unc[offset + 1] & 0xFF);
+            			
+            			// ExpandAlphaIndexTableDXT5(alphaIdxTable, rawData, off + 2);
+            			expandAlphaIndexTableDXT5(alphaIdxTable, unc, offset + 2);
+            			
+            			// may be reverse endian-ness
+            			int u0 = 0xFFFF & ((unc[offset +  8]) | (unc[offset +  9] << 8));
+            			int u1 = 0xFFFF & ((unc[offset + 10]) | (unc[offset + 11] << 8));
+
+        			    // ExpandColorTable(colorTable, u0, u1);
+            			expandColorTable(colorTable, u0, u1);
+            			
+            			// ExpandColorIndexTable(colorIdxTable, rawData, off + 12);
+            			expandColorIndexTable(colorIdxTable, unc, offset + 12);
+            			
+            			for (int j = 0; j < 4; j++) {
+            				for (int i = 0; i < 4; i++) {
+            					setPixel(decBuff,
+            							x + i,
+            							y + j,
+            							width,
+            							colorTable[colorIdxTable[j * 4 + i]],
+            							alphaTable[alphaIdxTable[(j * 4 + i) % 4]]); // hack alpha channel
+            				}
+            			}
+            			
+            		}
+            	}
+            	break;
         }
         data = decBuff;
+    }
+    
+    private void setPixel(byte[] data, int x, int y, int width, Color color, int alpha) {
+    	int offset = (y * width + x) * 4;
+
+    	data[offset + 2] = (byte) color.R;    //R
+    	data[offset + 1] = (byte) color.G;    //G
+    	data[offset + 0] = (byte) color.B;    //B
+    	data[offset + 3] = (byte) alpha;      //A
+    	
+    }
+    
+    private void expandAlphaTableDXT5(int[] alphaTable, int a0, int a1) {
+		alphaTable[0] = a0;
+		alphaTable[1] = a1;
+		
+		if (a0 > a1) {
+			for (int i = 2; i < 8; i++) {
+				alphaTable[i] = (((8 - i) * a0 + (i - 1) * a1) / 7);
+			}
+		} else {
+			for (int i = 2; i < 6; i++) {
+				alphaTable[i] = (((6 - i) * a0 + (i - 1) * a1) / 5);
+            }
+			alphaTable[6] = 0;
+			alphaTable[7] = 255;
+		}
+		
+		/*for (int i = 0; i < 8; i++) {
+			System.out.print(alphaTable[i]);
+			if (i != 7) System.out.print(", ");
+		}
+		System.out.println();*/
+    }
+    
+    private void expandAlphaIndexTableDXT5(int[] alphaIdxTable, byte[] unc, int tOffset) {
+		for (int i = 0; i < 16; i += 8, tOffset += 3) {
+			int flags = unc[tOffset] |
+					    unc[tOffset + 1] << 8 |
+					    unc[tOffset + 2] << 16;
+			
+			for (int j = 0; j < 8; j++) {
+				int mask = 0x07 << (3 * j);
+				
+				alphaIdxTable[i + j] = (flags & mask) >>> (3 * j);
+			}
+		}
+    }
+    
+    private void expandColorTable(Color[] colorTable, int u0, int u1) {
+		colorTable[0] = rgb565ToColor(u0); // RGB565ToColor(c0)
+		colorTable[1] = rgb565ToColor(u1); // RGB565ToColor(c1)
+		
+		if (u0 > u1) {
+			colorTable[2] = new Color(
+					(colorTable[0].R * 2 + colorTable[1].R) / 3, 
+					(colorTable[0].G * 2 + colorTable[1].G) / 3, 
+					(colorTable[0].B * 2 + colorTable[1].B) / 3
+			);
+			colorTable[3] = new Color(
+					(colorTable[0].R + colorTable[1].R * 2) / 3, 
+					(colorTable[0].G + colorTable[1].G * 2) / 3, 
+					(colorTable[0].B + colorTable[1].B * 2) / 3
+			);
+ 		} else {
+			colorTable[2] = new Color(
+					(colorTable[0].R + colorTable[1].R) / 2, 
+					(colorTable[0].G + colorTable[1].G) / 2, 
+					(colorTable[0].B + colorTable[1].B) / 2);
+            colorTable[3] = new Color(0, 0, 0);
+		}
+		
+    }
+    
+    private void expandColorIndexTable(int[] colorIdxTable, byte[] unc, int tOffset) {
+		for (int i = 0; i < 16; i += 4, tOffset++) {
+			colorIdxTable[i    ] =  unc[tOffset] & 0x03;
+			colorIdxTable[i + 1] = (unc[tOffset] & 0x0C) >>> 2;
+			colorIdxTable[i + 2] = (unc[tOffset] & 0x30) >>> 4;
+			colorIdxTable[i + 3] = (unc[tOffset] & 0xC0) >>> 6;
+		}
+    }
+    
+    private static Color rgb565ToColor(int val) {
+    	int r = (val >>> 11) & 0x1F;
+    	int g = (val >>>  5) & 0x3F;
+    	int b = val & 0x1F;
+
+        return new Color(
+        		(r << 3) | (r >>> 2),
+        		(g << 2) | (g >>> 4),
+        		(b << 3) | (b >>> 2)
+        );
+    }
+    
+    private static class Color {
+    	
+    	public int R;
+    	public int G;
+    	public int B;
+    	
+    	public Color(int r, int g, int b) {
+    		this.R = r & 0xFF;
+    		this.G = g & 0xFF;
+    		this.B = b & 0xFF;
+    	}
     }
 
     private Image createImage() {
         DataBufferByte imgData = new DataBufferByte(data, data.length);
         SampleModel model = new PixelInterleavedSampleModel(DataBuffer.TYPE_BYTE, width, height, 4, width * 4, ZAHLEN);
         WritableRaster raster = Raster.createWritableRaster(model, imgData, new Point(0, 0));
-        BufferedImage ret = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage ret = new BufferedImage(width, height, BufferedImage.TYPE_4BYTE_ABGR);
         ret.setData(raster);
         return ret;
     }
