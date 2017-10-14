@@ -28,6 +28,8 @@ import java.awt.image.SampleModel;
 import java.awt.image.WritableRaster;
 import java.util.zip.Inflater;
 
+import wz.util.DDSLineReader;
+
 /**
  *
  * @author Brenterino
@@ -90,13 +92,9 @@ public final class PNG {
                 size /= 128;
                 break;
             case 1026:
-                // DXT1 Format
-                System.out.println("DXT3 Format is currently unsupported.");
-                break;
             case 2050:
-            	// DXT5
-                System.out.println("DXT5 Format is currently unsupported.");
-                System.out.println("Size = " + size + " Len = " + data.length);
+            	// DXT3/DXT5
+            	size *= 4;
             	break;
             default:
                 System.out.println("New image format: " + format);
@@ -145,44 +143,21 @@ public final class PNG {
                     }
                 }
                 break;
+            case 1026:
             case 2050:
-            	Color[] colorTable = new Color[4];
-            	int[] colorIdxTable = new int[16];
-            	int[] alphaTable   = new int[8];
-            	int[] alphaIdxTable = new int[16];
+            	DDSLineReader reader = new DDSLineReader();
             	
-            	for (int y = 0; y < height; y += 4) {
-            		for (int x = 0; x < width; x += 4) {
-            			
-            			int offset = x * 4 + y * width;
-            			
-            			// ExpandAlphaTableDXT5(alphaTable, rawData[off + 0], rawData[off + 1]);
-            			expandAlphaTableDXT5(alphaTable, unc[offset] & 0xFF, unc[offset + 1] & 0xFF);
-            			
-            			// ExpandAlphaIndexTableDXT5(alphaIdxTable, rawData, off + 2);
-            			expandAlphaIndexTableDXT5(alphaIdxTable, unc, offset + 2);
-            			
-            			// may be reverse endian-ness
-            			int u0 = 0xFFFF & ((unc[offset +  8]) | (unc[offset +  9] << 8));
-            			int u1 = 0xFFFF & ((unc[offset + 10]) | (unc[offset + 11] << 8));
-
-        			    // ExpandColorTable(colorTable, u0, u1);
-            			expandColorTable(colorTable, u0, u1);
-            			
-            			// ExpandColorIndexTable(colorIdxTable, rawData, off + 12);
-            			expandColorIndexTable(colorIdxTable, unc, offset + 12);
-            			
-            			for (int j = 0; j < 4; j++) {
-            				for (int i = 0; i < 4; i++) {
-            					setPixel(decBuff,
-            							x + i,
-            							y + j,
-            							width,
-            							colorTable[colorIdxTable[j * 4 + i]],
-            							alphaTable[alphaIdxTable[(j * 4 + i) % 4]]); // hack alpha channel
-            				}
-            			}
-            			
+            	byte[][] line = new byte[4][width];
+            	
+            	for (int y = 0; y < height; y++) {
+            		reader.decodeDXT(unc, format == 1026 ? 3 : 5, line, width, y);
+            		
+            		for (int x = 0; x < width; x++) {
+            			setPixel(decBuff, x, y, width, 
+            					0xFF & line[0][x],
+            					0xFF & line[1][x],
+            					0xFF & line[2][x],
+            					0xFF & line[3][x]);
             		}
             	}
             	break;
@@ -190,97 +165,21 @@ public final class PNG {
         data = decBuff;
     }
     
-    private void setPixel(byte[] data, int x, int y, int width, Color color, int alpha) {
-    	int offset = (y * width + x) * 4;
-
+    private void setPixel(byte[] data, int offset, Color color, int alpha) {
     	data[offset + 2] = (byte) color.R;    //R
     	data[offset + 1] = (byte) color.G;    //G
     	data[offset + 0] = (byte) color.B;    //B
     	data[offset + 3] = (byte) alpha;      //A
-    	
     }
     
-    private void expandAlphaTableDXT5(int[] alphaTable, int a0, int a1) {
-		alphaTable[0] = a0;
-		alphaTable[1] = a1;
-		
-		if (a0 > a1) {
-			for (int i = 2; i < 8; i++) {
-				alphaTable[i] = (((8 - i) * a0 + (i - 1) * a1) / 7);
-			}
-		} else {
-			for (int i = 2; i < 6; i++) {
-				alphaTable[i] = (((6 - i) * a0 + (i - 1) * a1) / 5);
-            }
-			alphaTable[6] = 0;
-			alphaTable[7] = 255;
-		}
-		
-		/*for (int i = 0; i < 8; i++) {
-			System.out.print(alphaTable[i]);
-			if (i != 7) System.out.print(", ");
-		}
-		System.out.println();*/
-    }
-    
-    private void expandAlphaIndexTableDXT5(int[] alphaIdxTable, byte[] unc, int tOffset) {
-		for (int i = 0; i < 16; i += 8, tOffset += 3) {
-			int flags = unc[tOffset] |
-					    unc[tOffset + 1] << 8 |
-					    unc[tOffset + 2] << 16;
-			
-			for (int j = 0; j < 8; j++) {
-				int mask = 0x07 << (3 * j);
-				
-				alphaIdxTable[i + j] = (flags & mask) >>> (3 * j);
-			}
-		}
-    }
-    
-    private void expandColorTable(Color[] colorTable, int u0, int u1) {
-		colorTable[0] = rgb565ToColor(u0); // RGB565ToColor(c0)
-		colorTable[1] = rgb565ToColor(u1); // RGB565ToColor(c1)
-		
-		if (u0 > u1) {
-			colorTable[2] = new Color(
-					(colorTable[0].R * 2 + colorTable[1].R) / 3, 
-					(colorTable[0].G * 2 + colorTable[1].G) / 3, 
-					(colorTable[0].B * 2 + colorTable[1].B) / 3
-			);
-			colorTable[3] = new Color(
-					(colorTable[0].R + colorTable[1].R * 2) / 3, 
-					(colorTable[0].G + colorTable[1].G * 2) / 3, 
-					(colorTable[0].B + colorTable[1].B * 2) / 3
-			);
- 		} else {
-			colorTable[2] = new Color(
-					(colorTable[0].R + colorTable[1].R) / 2, 
-					(colorTable[0].G + colorTable[1].G) / 2, 
-					(colorTable[0].B + colorTable[1].B) / 2);
-            colorTable[3] = new Color(0, 0, 0);
-		}
-		
-    }
-    
-    private void expandColorIndexTable(int[] colorIdxTable, byte[] unc, int tOffset) {
-		for (int i = 0; i < 16; i += 4, tOffset++) {
-			colorIdxTable[i    ] =  unc[tOffset] & 0x03;
-			colorIdxTable[i + 1] = (unc[tOffset] & 0x0C) >>> 2;
-			colorIdxTable[i + 2] = (unc[tOffset] & 0x30) >>> 4;
-			colorIdxTable[i + 3] = (unc[tOffset] & 0xC0) >>> 6;
-		}
-    }
-    
-    private static Color rgb565ToColor(int val) {
-    	int r = (val >>> 11) & 0x1F;
-    	int g = (val >>>  5) & 0x3F;
-    	int b = val & 0x1F;
+    private void setPixel(byte[] data, int x, int y, int width, Color color, int alpha) {
+    	int offset = (y * width + x) * 4;
 
-        return new Color(
-        		(r << 3) | (r >>> 2),
-        		(g << 2) | (g >>> 4),
-        		(b << 3) | (b >>> 2)
-        );
+    	setPixel(data, offset, color, alpha);
+    }
+    
+    private void setPixel(byte[] data, int x, int y, int width, int r, int g, int b, int alpha) {
+    	setPixel(data, x, y, width, new Color(r, g, b), alpha);
     }
     
     private static class Color {
@@ -293,6 +192,21 @@ public final class PNG {
     		this.R = r & 0xFF;
     		this.G = g & 0xFF;
     		this.B = b & 0xFF;
+    	}
+    	
+        public int getPixel888()
+        {
+            return (R << 16 | G << 8 | B);
+        }
+    	
+    	public Color premultiply(int alpha) {
+    		double alphaF = alpha / 255.0;
+    		
+    		return new Color(
+    				(int) (R * alphaF),
+    		        (int) (G * alphaF),
+    		        (int) (B * alphaF)        
+    		);
     	}
     }
 
@@ -311,6 +225,14 @@ public final class PNG {
 
     public byte[] rawData() {
         return data;
+    }
+    
+    public int getWidth() {
+    	return width;
+    }
+    
+    public int getHeight() {
+    	return height;
     }
     
     public int getFormat() {
